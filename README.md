@@ -33,7 +33,7 @@ Building modern crypto analytics tools focused on real-time tracking, portfolio 
 Modern crypto tracking platform with analytics and market intelligence.
 
 Website:
-https://crypto-tracker--iamjmac0621.replit.app/
+https://trackit.codes/
 
 ---
 
