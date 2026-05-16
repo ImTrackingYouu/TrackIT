@@ -1,0 +1,618 @@
+import { useState } from "react";
+import { useLocation } from "wouter";
+import { Search, BarChart2, Radio, ArrowRight, X, Zap } from "lucide-react";
+import {
+  useAnalyzeWallet,
+  useGetPlatformStats,
+  useGetRecentSearches,
+} from "@workspace/api-client-react";
+import { Skeleton } from "@/components/ui/skeleton";
+import { Badge } from "@/components/ui/badge";
+import logoUrl from "@assets/track_it_transparent_backgreound_1778373764134.png";
+
+const FLOATING_LOGOS = [
+  { x: 88,  y: 10,  size: 56, delay: 0,  dur: 12, op: 0.38 },
+  { x: 6,   y: 35,  size: 52, delay: 4,  dur: 14, op: 0.34 },
+  { x: 82,  y: 58,  size: 58, delay: 8,  dur: 11, op: 0.40 },
+  { x: 10,  y: 78,  size: 50, delay: 2,  dur: 13, op: 0.35 },
+  { x: 60,  y: 82,  size: 54, delay: 6,  dur: 12, op: 0.36 },
+];
+
+// ── Edit this to show your contract address ──────────────────────────────────
+const CA_ADDRESS = ""; // paste your CA here
+// ─────────────────────────────────────────────────────────────────────────────
+
+const STARS = Array.from({ length: 100 }, (_, i) => {
+  const x = ((i * 13.7 + 7) * 97.3) % 100;
+  const y = ((i * 31.1 + 3) * 61.7) % 100;
+  const size = i % 7 === 0 ? 3.5 : i % 3 === 0 ? 2.5 : 1.5;
+  const opacity = 0.45 + (i % 5) * 0.1;
+  const twinkleDur = 1.8 + (i % 5) * 0.6;
+  const floatDur = 4 + (i % 7) * 0.9;
+  const delay = (i * 0.37) % 5;
+  const isCross = i % 14 === 0;
+  const glow = i % 5 === 0;
+  return { id: i, x, y, size, opacity, twinkleDur, floatDur, delay, isCross, glow };
+});
+
+function truncateAddress(addr: string) {
+  if (addr.length <= 16) return addr;
+  return `${addr.slice(0, 8)}...${addr.slice(-6)}`;
+}
+
+function formatNumber(n: number) {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
+  return n.toLocaleString();
+}
+
+type ModalType = "privacy" | "docs" | null;
+
+function Modal({ type, onClose }: { type: ModalType; onClose: () => void }) {
+  if (!type) return null;
+
+  const content =
+    type === "privacy" ? (
+      <>
+        <h2 className="text-lg font-bold mb-4">Privacy Policy</h2>
+        <div className="space-y-4 text-sm text-muted-foreground leading-relaxed">
+          <p>
+            <strong className="text-foreground">What we collect:</strong>{" "}
+            TrackIT does not collect any personally identifiable information.
+            When you analyze a wallet, the Solana wallet address you enter is
+            sent to the Solana mainnet RPC to fetch public on-chain data. This
+            address may be stored in our database to power the leaderboard and
+            recent-searches features.
+          </p>
+          <p>
+            <strong className="text-foreground">On-chain data:</strong> All
+            wallet data displayed — including SOL balance, transaction history,
+            token holdings, and activity metrics — is publicly available on the
+            Solana blockchain. TrackIT does not have access to private keys or
+            any non-public information.
+          </p>
+          <p>
+            <strong className="text-foreground">
+              Cookies &amp; analytics:
+            </strong>{" "}
+            TrackIT does not use tracking cookies or third-party analytics. No
+            data is sold to or shared with third parties.
+          </p>
+          <p>
+            <strong className="text-foreground">Data retention:</strong> Wallet
+            analysis results are cached in our database to power platform
+            statistics. You can re-analyze any wallet at any time to refresh
+            cached data.
+          </p>
+          <p>
+            <strong className="text-foreground">Contact:</strong> For any
+            privacy-related questions, reach out via the project repository.
+          </p>
+        </div>
+      </>
+    ) : (
+      <>
+        <h2 className="text-lg font-bold mb-4">How TrackIT Works</h2>
+        <div className="space-y-4 text-sm text-muted-foreground leading-relaxed">
+          <div>
+            <p className="text-foreground font-semibold mb-1">Data Source</p>
+            <p>
+              All data is fetched in real time from the{" "}
+              <strong className="text-foreground">Solana mainnet RPC</strong> (
+              <code className="bg-muted px-1 rounded text-xs">
+                api.mainnet-beta.solana.com
+              </code>
+              ). Nothing is simulated or estimated — every number you see comes
+              directly from the blockchain.
+            </p>
+          </div>
+          <div>
+            <p className="text-foreground font-semibold mb-1">
+              Activity Score (0–100)
+            </p>
+            <p>
+              A composite score derived entirely from on-chain signals: wallet
+              age (25%), transaction volume (25%), transaction success rate
+              (25%), and SOL balance (25%). Higher scores indicate older, more
+              active wallets with higher success rates and larger balances.
+            </p>
+          </div>
+          <div>
+            <p className="text-foreground font-semibold mb-1">
+              Transaction Analysis
+            </p>
+            <p>
+              We fetch up to 1,000 recent transaction signatures and paginate
+              backwards to find the wallet's true creation date. Buy/sell
+              classification is based on pre/post token balance changes in each
+              transaction.
+            </p>
+          </div>
+          <div>
+            <p className="text-foreground font-semibold mb-1">Token Holdings</p>
+            <p>
+              Token symbols are resolved against the Solana token registry
+              (13,500+ tokens). Tokens not in the registry (e.g. pump.fun meme
+              coins) are shown as "unrecognized."
+            </p>
+          </div>
+          <div>
+            <p className="text-foreground font-semibold mb-1">Charts</p>
+            <p>
+              Both charts — Daily Transactions and Daily Success Rate — are
+              aggregated from the real 1,000-signature batch. No interpolation
+              or fill-in is applied.
+            </p>
+          </div>
+          <div>
+            <p className="text-foreground font-semibold mb-1">Limitations</p>
+            <p>
+              USD values are not shown (would require a price feed). Wallets
+              with more than 2,000 lifetime transactions may have estimated —
+              not exact — total counts. Very new wallets or program accounts may
+              show limited data.
+            </p>
+          </div>
+        </div>
+      </>
+    );
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm"
+      onClick={onClose}
+    >
+      <div
+        className="bg-card border border-border rounded-xl p-6 max-w-lg w-full max-h-[80vh] overflow-y-auto shadow-2xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex justify-end mb-2">
+          <button
+            onClick={onClose}
+            className="text-muted-foreground hover:text-foreground transition-colors p-1 rounded-md hover:bg-accent"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+        {content}
+      </div>
+    </div>
+  );
+}
+
+export default function Home() {
+  const [address, setAddress] = useState("");
+  const [error, setError] = useState("");
+  const [modal, setModal] = useState<ModalType>(null);
+  const [, setLocation] = useLocation();
+  const analyzeWallet = useAnalyzeWallet();
+  const { data: stats, isLoading: statsLoading } = useGetPlatformStats();
+  const { data: recentSearches } = useGetRecentSearches();
+
+  const handleAnalyze = async () => {
+    const trimmed = address.trim();
+    if (!trimmed) {
+      setError("Please enter a wallet address.");
+      return;
+    }
+    if (!/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(trimmed)) {
+      setError("Invalid Solana wallet address.");
+      return;
+    }
+    setError("");
+    analyzeWallet.mutate(
+      { data: { address: trimmed } },
+      {
+        onSuccess: () => setLocation(`/dashboard/${trimmed}`),
+        onError: () => setError("Analysis failed. Please try again."),
+      },
+    );
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === "Enter") handleAnalyze();
+  };
+
+  return (
+    <div className="home-colorwave-bg min-h-screen text-white overflow-x-hidden relative">
+      <Modal type={modal} onClose={() => setModal(null)} />
+
+      {/* Floating blobs */}
+      <div className="pointer-events-none fixed inset-0 overflow-hidden z-0">
+        <div
+          className="absolute top-[-10%] left-[-5%] w-[55vw] h-[55vw] rounded-full opacity-30"
+          style={{
+            background:
+              "radial-gradient(circle, #4a00a0 0%, #1a003a 50%, transparent 75%)",
+            filter: "blur(80px)",
+            animation: "blob1 35s ease-in-out infinite",
+          }}
+        />
+        <div
+          className="absolute top-[30%] right-[-10%] w-[45vw] h-[45vw] rounded-full opacity-20"
+          style={{
+            background:
+              "radial-gradient(circle, #2d006a 0%, #0d001f 55%, transparent 75%)",
+            filter: "blur(90px)",
+            animation: "blob2 42s ease-in-out infinite",
+          }}
+        />
+        <div
+          className="absolute bottom-[-5%] left-[20%] w-[50vw] h-[40vw] rounded-full opacity-25"
+          style={{
+            background:
+              "radial-gradient(circle, #1e0050 0%, #08001a 55%, transparent 75%)",
+            filter: "blur(100px)",
+            animation: "blob3 38s ease-in-out infinite",
+          }}
+        />
+      </div>
+      {/* Dot grid */}
+      <div
+        className="pointer-events-none fixed inset-0 z-0"
+        style={{
+          backgroundImage: "radial-gradient(circle, rgba(255,255,255,0.07) 1px, transparent 1px)",
+          backgroundSize: "28px 28px",
+        }}
+      />
+
+      {/* Floating logos */}
+      <div className="pointer-events-none fixed inset-0 z-0 overflow-hidden">
+        {FLOATING_LOGOS.map((l, i) => (
+          <img
+            key={i}
+            src={logoUrl}
+            alt=""
+            style={{
+              position: "absolute",
+              left: `${l.x}%`,
+              top: `${l.y}%`,
+              width: `${l.size}px`,
+              height: `${l.size}px`,
+              objectFit: "contain",
+              ["--logo-op" as string]: l.op,
+              animation: `logo-drift ${l.dur}s ease-in-out ${l.delay}s infinite`,
+            }}
+          />
+        ))}
+      </div>
+
+      {/* Stars */}
+      <div className="pointer-events-none fixed inset-0 z-0 overflow-hidden">
+        {STARS.map((s) =>
+          s.isCross ? (
+            <div
+              key={s.id}
+              className="absolute text-white select-none"
+              style={{
+                left: `${s.x}%`,
+                top: `${s.y}%`,
+                fontSize: `${s.size * 5}px`,
+                opacity: s.opacity,
+                animation: `twinkle ${s.twinkleDur}s ease-in-out ${s.delay}s infinite, float-star ${s.floatDur}s ease-in-out ${s.delay}s infinite`,
+                ["--star-op" as string]: s.opacity,
+              }}
+            >
+              +
+            </div>
+          ) : (
+            <div
+              key={s.id}
+              className="absolute rounded-full bg-white"
+              style={{
+                left: `${s.x}%`,
+                top: `${s.y}%`,
+                width: `${s.size}px`,
+                height: `${s.size}px`,
+                opacity: s.opacity,
+                animation: `twinkle ${s.twinkleDur}s ease-in-out ${s.delay}s infinite, float-star ${s.floatDur}s ease-in-out ${s.delay}s infinite`,
+                ["--star-op" as string]: s.opacity,
+                boxShadow: s.glow ? `0 0 ${s.size * 3}px ${s.size}px rgba(180,140,255,0.6)` : undefined,
+              }}
+            />
+          )
+        )}
+      </div>
+
+      {/* Navbar */}
+      <header className="fixed top-0 left-0 right-0 z-40 border-b border-white/8 bg-black/30 backdrop-blur-md">
+        <div className="max-w-7xl mx-auto px-6 h-14 flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <img
+              src={logoUrl}
+              alt="TrackIT logo"
+              className="w-12 h-12 object-contain"
+            />
+            <span className="font-bold text-lg tracking-tight text-white">
+              TrackIT
+            </span>
+          </div>
+          <nav className="hidden md:flex items-center gap-6 text-sm text-white/60">
+            <a href="#features" className="hover:text-white transition-colors">
+              Features
+            </a>
+            <button
+              onClick={() => setModal("docs")}
+              className="hover:text-white transition-colors cursor-pointer"
+            >
+              Docs
+            </button>
+            <a
+              href="https://x.com/Trackitai"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="hover:text-white transition-colors flex items-center gap-1.5"
+              aria-label="Follow TrackIT on X"
+            >
+              <svg viewBox="0 0 24 24" className="w-4 h-4 fill-current" aria-hidden="true">
+                <path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-4.714-6.231-5.401 6.231H2.746l7.73-8.835L1.254 2.25H8.08l4.259 5.631 5.905-5.631zm-1.161 17.52h1.833L7.084 4.126H5.117z" />
+              </svg>
+              <span>@Trackitai</span>
+            </a>
+          </nav>
+        </div>
+      </header>
+
+      {/* Hero */}
+      <section className="relative z-10 pt-36 pb-24 px-6">
+        <div className="relative z-10 max-w-5xl mx-auto">
+          <p className="mb-5 text-xs font-mono text-purple-400/60 tracking-widest">// gm · mainnet · live data</p>
+          <h1 className="font-display text-5xl md:text-7xl font-bold tracking-tight mb-6 leading-[1.05] text-white drop-shadow-lg max-w-3xl">
+            Is your wallet even{" "}
+            <span className="bg-gradient-to-r from-purple-400 to-cyan-400 bg-clip-text text-transparent">
+              worth tracking?
+            </span>
+          </h1>
+          <p className="text-white/50 text-base mb-10 max-w-md leading-relaxed">
+            Paste any Solana wallet. See if it's a real trader, a bot, or an exchange —
+            plus their trader tag and how many wallets are already following their moves.
+          </p>
+
+          <div className="flex flex-col sm:flex-row gap-3 max-w-xl">
+            <div className="flex-1 relative">
+              <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-white/40 pointer-events-none" />
+              <input
+                id="hero-input"
+                data-testid="input-wallet-address"
+                type="text"
+                value={address}
+                onChange={(e) => {
+                  setAddress(e.target.value);
+                  setError("");
+                }}
+                onKeyDown={handleKeyDown}
+                placeholder="Paste Solana wallet address…"
+                className="w-full pl-10 pr-4 py-3 bg-white/5 border border-white/15 rounded-lg text-sm font-mono text-white placeholder:text-white/30 focus:outline-none focus:ring-2 focus:ring-purple-500/50 focus:border-purple-500/50 transition-all backdrop-blur-sm"
+              />
+            </div>
+            <button
+              data-testid="button-analyze"
+              onClick={handleAnalyze}
+              disabled={analyzeWallet.isPending}
+              className="px-6 py-3 bg-purple-600 hover:bg-purple-500 text-white rounded-lg text-sm font-semibold transition-colors disabled:opacity-60 flex items-center gap-2 justify-center min-w-[110px] shadow-lg shadow-purple-900/40"
+            >
+              {analyzeWallet.isPending ? (
+                <>
+                  <span className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                  Analyzing…
+                </>
+              ) : (
+                <>
+                  Analyze
+                  <ArrowRight className="w-4 h-4" />
+                </>
+              )}
+            </button>
+          </div>
+
+          {error && (
+            <p data-testid="text-error" className="mt-3 text-sm text-red-400">
+              {error}
+            </p>
+          )}
+
+          {recentSearches && recentSearches.length > 0 && (
+            <div className="mt-5 flex flex-wrap gap-2 items-center">
+              <span className="text-xs font-mono text-white/30">recently cooked:</span>
+              {recentSearches.slice(0, 3).map((s) => (
+                <button
+                  key={s.address}
+                  data-testid={`button-recent-${s.address}`}
+                  onClick={() => setLocation(`/dashboard/${s.address}`)}
+                  className="text-xs font-mono text-white/35 hover:text-purple-400 transition-colors border border-white/10 rounded px-2 py-0.5 hover:border-purple-500/40"
+                >
+                  {truncateAddress(s.address)}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      </section>
+
+      {/* Stats */}
+      <section id="analytics" className="relative z-10 px-6 pb-20">
+        <div className="max-w-5xl mx-auto border border-white/10 rounded-xl overflow-hidden divide-y md:divide-y-0 md:divide-x divide-white/10 grid grid-cols-2 md:grid-cols-4">
+          {[
+            {
+              label: "Wallets Checked",
+              value: statsLoading ? null : formatNumber(stats?.walletsAnalyzed ?? 0),
+            },
+            {
+              label: "Daily Lookups",
+              value: statsLoading ? null : formatNumber(stats?.dailySearches ?? 0),
+            },
+            {
+              label: "Txs Analyzed",
+              value: statsLoading ? null : formatNumber(stats?.trackingSignals ?? 0),
+            },
+            {
+              label: "Avg Degen Score",
+              value: statsLoading ? null : `${stats?.avgActivityScore?.toFixed(1) ?? "0"}`,
+            },
+          ].map((stat) => (
+            <div key={stat.label} className="px-6 py-5 bg-white/[0.02]">
+              {stat.value === null ? (
+                <Skeleton className="h-7 w-16 mb-2 bg-white/10" />
+              ) : (
+                <p
+                  data-testid={`text-stat-${stat.label.toLowerCase().replace(/ /g, "-")}`}
+                  className="text-2xl font-bold font-mono text-purple-400 mb-1"
+                >
+                  {stat.value}
+                </p>
+              )}
+              <p className="text-xs text-white/40 font-mono">{stat.label}</p>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      {/* Features */}
+      <section id="features" className="relative z-10 px-6 pb-28">
+        <div className="max-w-5xl mx-auto">
+          <div className="flex justify-center mb-10">
+            <div className="flex items-center gap-3 border border-purple-500/30 bg-purple-500/5 rounded-lg px-4 py-2.5 backdrop-blur-sm">
+              <span className="text-xs font-mono font-bold text-purple-400 shrink-0">CA:</span>
+              {CA_ADDRESS ? (
+                <>
+                  <span className="text-xs font-mono text-white/70 break-all">{CA_ADDRESS}</span>
+                  <button
+                    onClick={() => navigator.clipboard.writeText(CA_ADDRESS)}
+                    className="shrink-0 text-white/30 hover:text-purple-400 transition-colors"
+                    title="Copy CA"
+                  >
+                    <svg xmlns="http://www.w3.org/2000/svg" className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/>
+                    </svg>
+                  </button>
+                </>
+              ) : (
+                <span className="text-xs font-mono text-white/25 italic">coming soon</span>
+              )}
+            </div>
+          </div>
+          <h2 className="font-display text-center text-2xl font-bold mb-3 text-white">
+            Do you have motion?
+          </h2>
+          <p className="text-center text-white/50 text-sm mb-12 max-w-md mx-auto">
+            Let's see how many other people trust your judgment.
+          </p>
+          <div className="grid md:grid-cols-3 gap-px bg-white/10 border border-white/10 rounded-xl overflow-hidden">
+            {[
+              {
+                num: "01",
+                title: "Copytrader count",
+                desc: "Estimated wallets already copying this trader — calculated from win rate, activity, and volume on mainnet. Recalculates every lookup.",
+                accent: "border-purple-500",
+              },
+              {
+                num: "02",
+                title: "Bot, exchange, or actual degen?",
+                desc: "Detected from on-chain patterns. Near-perfect win rate at huge volume = sniper bot. Massive SOL with 100+ tokens = exchange. Everything else = a real human you might want to copy.",
+                accent: "border-cyan-500",
+              },
+              {
+                num: "03",
+                title: "Their tag — Chad, Degen, or cooked",
+                desc: "Every wallet gets tagged from real on-chain signals. Degen if they're sending it. Ghost if they've gone quiet. No cope, no made-up scores.",
+                accent: "border-purple-500",
+              },
+            ].map((f) => (
+              <div
+                key={f.title}
+                className={`bg-[#0a0015] p-6 hover:bg-white/[0.03] transition-colors border-t-2 ${f.accent}`}
+              >
+                <span className="block font-mono text-3xl font-bold text-white/8 mb-4 select-none">
+                  {f.num}.
+                </span>
+                <h3 className="font-semibold mb-2 text-sm text-white">
+                  {f.title}
+                </h3>
+                <p className="text-white/45 text-xs leading-relaxed">
+                  {f.desc}
+                </p>
+              </div>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      {/* Footer */}
+      <footer className="relative z-10 border-t border-white/8 px-6 py-10 bg-black/20 backdrop-blur-sm">
+        <div className="max-w-5xl mx-auto">
+          <div className="flex flex-col md:flex-row items-start justify-between gap-8 mb-8">
+            <div>
+              <div className="flex items-center gap-2 mb-3">
+                <img
+                  src={logoUrl}
+                  alt="TrackIT logo"
+                  className="w-7 h-7 object-contain"
+                />
+                <span className="font-bold text-white">TrackIT</span>
+              </div>
+              <p className="text-xs text-white/40 max-w-xs leading-relaxed">
+                Reads straight from Solana mainnet. Not financial advice.
+              </p>
+            </div>
+            <div className="flex gap-12 text-xs text-white/50">
+              <div className="flex flex-col gap-2">
+                <span className="text-white font-medium mb-1">Product</span>
+                <a
+                  href="#features"
+                  className="hover:text-white transition-colors"
+                >
+                  Features
+                </a>
+                <a
+                  href="#analytics"
+                  className="hover:text-white transition-colors"
+                >
+                  Analytics
+                </a>
+                <button
+                  onClick={() => setLocation("/leaderboard")}
+                  className="text-left hover:text-white transition-colors"
+                >
+                  Leaderboard
+                </button>
+              </div>
+              <div className="flex flex-col gap-2">
+                <span className="text-white font-medium mb-1">Legal</span>
+                <button
+                  onClick={() => setModal("privacy")}
+                  className="text-left hover:text-white transition-colors"
+                >
+                  Privacy
+                </button>
+                <button
+                  onClick={() => setModal("docs")}
+                  className="text-left hover:text-white transition-colors"
+                >
+                  Docs
+                </button>
+              </div>
+              <div className="flex flex-col gap-2">
+                <span className="text-white font-medium mb-1">Follow</span>
+                <a
+                  href="https://x.com/Trackitai"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="hover:text-white transition-colors flex items-center gap-1.5"
+                >
+                  <svg viewBox="0 0 24 24" className="w-3 h-3 fill-current shrink-0" aria-hidden="true">
+                    <path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-4.714-6.231-5.401 6.231H2.746l7.73-8.835L1.254 2.25H8.08l4.259 5.631 5.905-5.631zm-1.161 17.52h1.833L7.084 4.126H5.117z" />
+                  </svg>
+                  @Trackitai
+                </a>
+              </div>
+            </div>
+          </div>
+          <p className="text-xs text-white/30 border-t border-white/8 pt-6">
+            All data is fetched live from the Solana blockchain. Not financial
+            advice. TrackIT is not affiliated with any blockchain protocol.
+          </p>
+        </div>
+      </footer>
+    </div>
+  );
+}
