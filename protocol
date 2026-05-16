@@ -1,4 +1,255 @@
+import { useState } from "react";
+import { useLocation } from "wouter";
+import { Search, BarChart2, Radio, ArrowRight, X, Zap } from "lucide-react";
+import {
+  useAnalyzeWallet,
+  useGetPlatformStats,
+  useGetRecentSearches,
+} from "@workspace/api-client-react";
+import { Skeleton } from "@/components/ui/skeleton";
+import { Badge } from "@/components/ui/badge";
+import logoUrl from "@assets/track_it_transparent_backgreound_1778373764134.png";
 
+const FLOATING_LOGOS = [
+  { x: 88,  y: 10,  size: 56, delay: 0,  dur: 12, op: 0.38 },
+  { x: 6,   y: 35,  size: 52, delay: 4,  dur: 14, op: 0.34 },
+  { x: 82,  y: 58,  size: 58, delay: 8,  dur: 11, op: 0.40 },
+  { x: 10,  y: 78,  size: 50, delay: 2,  dur: 13, op: 0.35 },
+  { x: 60,  y: 82,  size: 54, delay: 6,  dur: 12, op: 0.36 },
+];
+
+// ── Edit this to show your contract address ──────────────────────────────────
+const CA_ADDRESS = ""; // paste your CA here
+// ─────────────────────────────────────────────────────────────────────────────
+
+const STARS = Array.from({ length: 100 }, (_, i) => {
+  const x = ((i * 13.7 + 7) * 97.3) % 100;
+  const y = ((i * 31.1 + 3) * 61.7) % 100;
+  const size = i % 7 === 0 ? 3.5 : i % 3 === 0 ? 2.5 : 1.5;
+  const opacity = 0.45 + (i % 5) * 0.1;
+  const twinkleDur = 1.8 + (i % 5) * 0.6;
+  const floatDur = 4 + (i % 7) * 0.9;
+  const delay = (i * 0.37) % 5;
+  const isCross = i % 14 === 0;
+  const glow = i % 5 === 0;
+  return { id: i, x, y, size, opacity, twinkleDur, floatDur, delay, isCross, glow };
+});
+
+function truncateAddress(addr: string) {
+  if (addr.length <= 16) return addr;
+  return `${addr.slice(0, 8)}...${addr.slice(-6)}`;
+}
+
+function formatNumber(n: number) {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
+  return n.toLocaleString();
+}
+
+type ModalType = "privacy" | "docs" | null;
+
+function Modal({ type, onClose }: { type: ModalType; onClose: () => void }) {
+  if (!type) return null;
+
+  const content =
+    type === "privacy" ? (
+      <>
+        <h2 className="text-lg font-bold mb-4">Privacy Policy</h2>
+        <div className="space-y-4 text-sm text-muted-foreground leading-relaxed">
+          <p>
+            <strong className="text-foreground">What we collect:</strong>{" "}
+            TrackIT does not collect any personally identifiable information.
+            When you analyze a wallet, the Solana wallet address you enter is
+            sent to the Solana mainnet RPC to fetch public on-chain data. This
+            address may be stored in our database to power the leaderboard and
+            recent-searches features.
+          </p>
+          <p>
+            <strong className="text-foreground">On-chain data:</strong> All
+            wallet data displayed — including SOL balance, transaction history,
+            token holdings, and activity metrics — is publicly available on the
+            Solana blockchain. TrackIT does not have access to private keys or
+            any non-public information.
+          </p>
+          <p>
+            <strong className="text-foreground">
+              Cookies &amp; analytics:
+            </strong>{" "}
+            TrackIT does not use tracking cookies or third-party analytics. No
+            data is sold to or shared with third parties.
+          </p>
+          <p>
+            <strong className="text-foreground">Data retention:</strong> Wallet
+            analysis results are cached in our database to power platform
+            statistics. You can re-analyze any wallet at any time to refresh
+            cached data.
+          </p>
+          <p>
+            <strong className="text-foreground">Contact:</strong> For any
+            privacy-related questions, reach out via the project repository.
+          </p>
+        </div>
+      </>
+    ) : (
+      <>
+        <h2 className="text-lg font-bold mb-4">How TrackIT Works</h2>
+        <div className="space-y-4 text-sm text-muted-foreground leading-relaxed">
+          <div>
+            <p className="text-foreground font-semibold mb-1">Data Source</p>
+            <p>
+              All data is fetched in real time from the{" "}
+              <strong className="text-foreground">Solana mainnet RPC</strong> (
+              <code className="bg-muted px-1 rounded text-xs">
+                api.mainnet-beta.solana.com
+              </code>
+              ). Nothing is simulated or estimated — every number you see comes
+              directly from the blockchain.
+            </p>
+          </div>
+          <div>
+            <p className="text-foreground font-semibold mb-1">
+              Activity Score (0–100)
+            </p>
+            <p>
+              A composite score derived entirely from on-chain signals: wallet
+              age (25%), transaction volume (25%), transaction success rate
+              (25%), and SOL balance (25%). Higher scores indicate older, more
+              active wallets with higher success rates and larger balances.
+            </p>
+          </div>
+          <div>
+            <p className="text-foreground font-semibold mb-1">
+              Transaction Analysis
+            </p>
+            <p>
+              We fetch up to 1,000 recent transaction signatures and paginate
+              backwards to find the wallet's true creation date. Buy/sell
+              classification is based on pre/post token balance changes in each
+              transaction.
+            </p>
+          </div>
+          <div>
+            <p className="text-foreground font-semibold mb-1">Token Holdings</p>
+            <p>
+              Token symbols are resolved against the Solana token registry
+              (13,500+ tokens). Tokens not in the registry (e.g. pump.fun meme
+              coins) are shown as "unrecognized."
+            </p>
+          </div>
+          <div>
+            <p className="text-foreground font-semibold mb-1">Charts</p>
+            <p>
+              Both charts — Daily Transactions and Daily Success Rate — are
+              aggregated from the real 1,000-signature batch. No interpolation
+              or fill-in is applied.
+            </p>
+          </div>
+          <div>
+            <p className="text-foreground font-semibold mb-1">Limitations</p>
+            <p>
+              USD values are not shown (would require a price feed). Wallets
+              with more than 2,000 lifetime transactions may have estimated —
+              not exact — total counts. Very new wallets or program accounts may
+              show limited data.
+            </p>
+          </div>
+        </div>
+      </>
+    );
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm"
+      onClick={onClose}
+    >
+      <div
+        className="bg-card border border-border rounded-xl p-6 max-w-lg w-full max-h-[80vh] overflow-y-auto shadow-2xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex justify-end mb-2">
+          <button
+            onClick={onClose}
+            className="text-muted-foreground hover:text-foreground transition-colors p-1 rounded-md hover:bg-accent"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+        {content}
+      </div>
+    </div>
+  );
+}
+
+export default function Home() {
+  const [address, setAddress] = useState("");
+  const [error, setError] = useState("");
+  const [modal, setModal] = useState<ModalType>(null);
+  const [, setLocation] = useLocation();
+  const analyzeWallet = useAnalyzeWallet();
+  const { data: stats, isLoading: statsLoading } = useGetPlatformStats();
+  const { data: recentSearches } = useGetRecentSearches();
+
+  const handleAnalyze = async () => {
+    const trimmed = address.trim();
+    if (!trimmed) {
+      setError("Please enter a wallet address.");
+      return;
+    }
+    if (!/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(trimmed)) {
+      setError("Invalid Solana wallet address.");
+      return;
+    }
+    setError("");
+    analyzeWallet.mutate(
+      { data: { address: trimmed } },
+      {
+        onSuccess: () => setLocation(`/dashboard/${trimmed}`),
+        onError: () => setError("Analysis failed. Please try again."),
+      },
+    );
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === "Enter") handleAnalyze();
+  };
+
+  return (
+    <div className="home-colorwave-bg min-h-screen text-white overflow-x-hidden relative">
+      <Modal type={modal} onClose={() => setModal(null)} />
+
+      {/* Floating blobs */}
+      <div className="pointer-events-none fixed inset-0 overflow-hidden z-0">
+        <div
+          className="absolute top-[-10%] left-[-5%] w-[55vw] h-[55vw] rounded-full opacity-30"
+          style={{
+            background:
+              "radial-gradient(circle, #4a00a0 0%, #1a003a 50%, transparent 75%)",
+            filter: "blur(80px)",
+            animation: "blob1 35s ease-in-out infinite",
+          }}
+        />
+        <div
+          className="absolute top-[30%] right-[-10%] w-[45vw] h-[45vw] rounded-full opacity-20"
+          style={{
+            background:
+              "radial-gradient(circle, #2d006a 0%, #0d001f 55%, transparent 75%)",
+            filter: "blur(90px)",
+            animation: "blob2 42s ease-in-out infinite",
+          }}
+        />
+        <div
+          className="absolute bottom-[-5%] left-[20%] w-[50vw] h-[40vw] rounded-full opacity-25"
+          style={{
+            background:
+              "radial-gradient(circle, #1e0050 0%, #08001a 55%, transparent 75%)",
+            filter: "blur(100px)",
+            animation: "blob3 38s ease-in-out infinite",
+          }}
+        />
+      </div>
+      {/* Dot grid */}
+      <div
+        className="pointer-events-none fixed inset-0 z-0"
         style={{
           backgroundImage: "radial-gradient(circle, rgba(255,255,255,0.07) 1px, transparent 1px)",
           backgroundSize: "28px 28px",
@@ -352,6 +603,17 @@
                     <path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-4.714-6.231-5.401 6.231H2.746l7.73-8.835L1.254 2.25H8.08l4.259 5.631 5.905-5.631zm-1.161 17.52h1.833L7.084 4.126H5.117z" />
                   </svg>
                   @Trackitai
+                </a>
+                <a
+                  href="https://github.com/ImTrackingYouu/TrackIT"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="hover:text-white transition-colors flex items-center gap-1.5"
+                >
+                  <svg viewBox="0 0 24 24" className="w-3 h-3 fill-current shrink-0" aria-hidden="true">
+                    <path d="M12 2C6.477 2 2 6.477 2 12c0 4.418 2.865 8.166 6.839 9.489.5.092.682-.217.682-.482 0-.237-.009-.868-.013-1.703-2.782.604-3.369-1.341-3.369-1.341-.454-1.155-1.11-1.463-1.11-1.463-.908-.62.069-.608.069-.608 1.003.07 1.531 1.03 1.531 1.03.892 1.529 2.341 1.087 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.11-4.555-4.943 0-1.091.39-1.984 1.029-2.683-.103-.253-.446-1.27.098-2.647 0 0 .84-.269 2.75 1.025A9.578 9.578 0 0 1 12 6.836a9.59 9.59 0 0 1 2.504.337c1.909-1.294 2.747-1.025 2.747-1.025.546 1.377.203 2.394.1 2.647.64.699 1.028 1.592 1.028 2.683 0 3.842-2.339 4.687-4.566 4.935.359.309.678.919.678 1.852 0 1.336-.012 2.415-.012 2.742 0 .267.18.578.688.48C19.138 20.163 22 16.418 22 12c0-5.523-4.477-10-10-10z" />
+                  </svg>
+                  GitHub
                 </a>
               </div>
             </div>
